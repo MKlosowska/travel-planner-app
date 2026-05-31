@@ -1,0 +1,133 @@
+@using Microsoft.JSInterop
+@using Microsoft.EntityFrameworkCore
+@using TravelPlannerApp.Models
+@using TravelPlannerApp.Data
+@inject IJSRuntime JS
+@inject AppDbContext Db
+
+<div id="map" style="height: 500px; width: 100%; border-radius: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);"></div>
+
+@code {
+    [Parameter] public int TripId { get; set; }
+    [Parameter] public EventCallback OnPointsChanged { get; set; }
+    [Parameter] public List<LocationPoint> Points { get; set; } = new();
+    [Parameter] public EventCallback<LocationPoint> OnEditPoint { get; set; }
+    
+    private DotNetObjectReference<MapComponent>? objRef;
+    private bool isInitialized = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                // Sprawdź czy Leaflet jest załadowany, jeśli nie - załaduj dynamicznie
+                var isLeafletLoaded = await JS.InvokeAsync<bool>("checkLeafletLoaded");
+                if (!isLeafletLoaded)
+                {
+                    Console.WriteLine("Leaflet not loaded, loading dynamically...");
+                    await JS.InvokeVoidAsync("loadLeaflet");
+                    await Task.Delay(500); // Daj czas na załadowanie
+                }
+                
+                objRef = DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("initMap", objRef, TripId, Points);
+                isInitialized = true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Map initialization error: {ex.Message}");
+            }
+        }
+        else if (Points.Any() && isInitialized)
+        {
+            await JS.InvokeVoidAsync("updateMarkers", TripId, Points);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMapClick(double lat, double lng)
+    {
+        // Zapytaj o nazwę przed dodaniem
+        var nazwa = await JS.InvokeAsync<string>("prompt", "Podaj nazwę punktu:", "Nowe miejsce");
+        if (string.IsNullOrWhiteSpace(nazwa))
+            return;
+        
+        var opis = await JS.InvokeAsync<string>("prompt", "Opis punktu (opcjonalny):", "");
+        
+        var newPoint = new LocationPoint
+        {
+            TripId = TripId,
+            Name = nazwa,
+            Description = opis ?? "",
+            Tag = "Atrakcja",
+            Latitude = lat,
+            Longitude = lng
+        };
+        
+        Db.Locations.Add(newPoint);
+        await Db.SaveChangesAsync();
+        
+        Points = await Db.Locations
+            .Where(l => l.TripId == TripId)
+            .ToListAsync();
+        
+        await JS.InvokeVoidAsync("updateMarkers", TripId, Points);
+        await OnPointsChanged.InvokeAsync();
+        StateHasChanged();
+    }
+    
+    [JSInvokable]
+    public async Task RemovePoint(int pointId)
+    {
+        var point = await Db.Locations.FindAsync(pointId);
+        if (point != null)
+        {
+            Db.Locations.Remove(point);
+            await Db.SaveChangesAsync();
+            Points = await Db.Locations
+                .Where(l => l.TripId == TripId)
+                .ToListAsync();
+            
+            await JS.InvokeVoidAsync("removeMarker", pointId);
+            await OnPointsChanged.InvokeAsync();
+            StateHasChanged();
+        }
+    }
+    
+    [JSInvokable]
+    public async Task UpdatePoint(int pointId, string name, string description)
+    {
+        var point = await Db.Locations.FindAsync(pointId);
+        if (point != null)
+        {
+            point.Name = name;
+            point.Description = description;
+            Db.Locations.Update(point);
+            await Db.SaveChangesAsync();
+            await JS.InvokeVoidAsync("updateMarkerPopup", pointId, name, description);
+            await OnPointsChanged.InvokeAsync();
+            StateHasChanged();
+        }
+    }
+    
+    public async Task RefreshPoints()
+    {
+        Points = await Db.Locations
+            .Where(l => l.TripId == TripId)
+            .ToListAsync();
+        await JS.InvokeVoidAsync("updateMarkers", TripId, Points);
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public async Task OpenEditForm(int pointId)
+    {
+        var point = await Db.Locations.FindAsync(pointId);
+        if (point != null)
+        {
+            await OnEditPoint.InvokeAsync(point);
+        }
+    }
+}
