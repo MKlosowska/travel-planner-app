@@ -1,4 +1,4 @@
-# Travel Planner App
+﻿# Travel Planner App
 
 ## Technologie
 
@@ -19,7 +19,7 @@
 - dodawanie, edycja i usuwanie podróży,
 - budżet podróży,
 - dodawanie wydatków i przeliczanie wykorzystanego budżetu,
-- upload dokumentów PDF z walidacją formatu i limitu 10 MB,
+- upload dokumentów PDF z walidacją formatu i limitu 15 MB,
 - podgląd i pobieranie PDF przez endpoint API,
 - upload zdjęć i galeria miniatur,
 - limit 500 MB plików na jedną podróż,

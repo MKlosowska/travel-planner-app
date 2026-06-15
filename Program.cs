@@ -1,10 +1,11 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 using TravelPlannerApp.Data;
 using TravelPlannerApp.Models;
 using TravelPlannerApp.Services;
+using TravelPlannerApp; 
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,20 +27,22 @@ app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapPost("/api/auth/login", async (HttpContext http, AppDbContext db, AuthService auth) =>
+// Bezpieczny endpoint autoryzacyjny wywoływany tylko po poprawnej walidacji w komponencie Blazor
+app.MapGet("/api/auth/login-success", async (HttpContext http, AuthService auth, string email, string password) =>
 {
-    var form = await http.Request.ReadFormAsync();
-    var email = form["email"].ToString();
-    var password = form["password"].ToString();
     var user = await auth.ValidateLoginAsync(email, password);
-    if (user == null) return Results.Redirect("/login?error=1");
-    if (user.LockedUntil.HasValue && user.LockedUntil > DateTime.Now) return Results.Redirect($"/login?locked={Uri.EscapeDataString(user.LockedUntil.Value.ToString("HH:mm"))}");
+    if (user == null) return Results.Redirect("/login");
+
     var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, user.Id.ToString()), new(ClaimTypes.Email, user.Email), new(ClaimTypes.Name, user.Email) };
     await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
     return Results.Redirect("/");
 }).AllowAnonymous();
 
-app.MapGet("/api/auth/logout", async (HttpContext http) => { await http.SignOutAsync(); return Results.Redirect("/login"); });
+app.MapGet("/api/auth/logout", async (HttpContext http) => 
+{ 
+    await http.SignOutAsync(); 
+    return Results.Redirect("/login"); 
+});
 
 app.MapGet("/api/documents/{id:int}", async (int id, AppDbContext db, ClaimsPrincipal user) =>
 {
@@ -58,6 +61,6 @@ app.MapGet("/api/packing/{id:int}/export", async (int id, AppDbContext db, PdfEx
 }).RequireAuthorization();
 
 app.MapBlazorHub();
-app.MapFallbackToPage("/_Host");
+app.MapRazorPages();
 await SeedData.InitializeAsync(app.Services);
 app.Run();

@@ -1,44 +1,31 @@
 @inherits LayoutComponentBase
-@inject NavigationManager Nav
 
-@if (IsAuthPage)
-{
-    <div class="auth-page">
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">
+            Travel Planner
+        </div>
+        
+        <nav>
+            <NavLink class="nav-item" href="" Match="NavLinkMatch.All">
+                Dashboard
+            </NavLink>
+            <NavLink class="nav-item" href="trips">
+                Moje Podróże
+            </NavLink>
+            <NavLink class="nav-item" href="settings">
+                Ustawienia
+            </NavLink>
+        </nav>
+        
+        <div class="sidebar-footer">
+            <a class="button logout-link full" href="/api/auth/logout">
+                Wyloguj się
+            </a>
+        </div>
+    </aside>
+
+    <main class="content">
         @Body
-    </div>
-}
-else
-{
-    <div class="shell">
-        <aside class="sidebar">
-            <div class="brand">
-                <span class="brand-mark">✈</span>
-                <span>Travel Planner</span>
-            </div>
-            <nav>
-                <NavLink href="/" Match="NavLinkMatch.All"><span>🏠</span> Dashboard</NavLink>
-                <NavLink href="/trips"><span>🧳</span> Podróże</NavLink>
-                <NavLink href="/settings"><span>⚙️</span> Ustawienia</NavLink>
-            </nav>
-            <div class="sidebar-footer">
-                <p>Planowanie podróży</p>
-                <small>Budżet · Dokumenty · Mapa · Pakowanie</small>
-                <a class="logout-link" href="/api/auth/logout">Wyloguj</a>
-            </div>
-        </aside>
-        <main class="content">
-            @Body
-        </main>
-    </div>
-}
-
-@code {
-    private bool IsAuthPage
-    {
-        get
-        {
-            var path = Nav.ToBaseRelativePath(Nav.Uri).Trim('/').ToLowerInvariant();
-            return path.StartsWith("login") || path.StartsWith("reset-password");
-        }
-    }
-}
+    </main>
+</div>

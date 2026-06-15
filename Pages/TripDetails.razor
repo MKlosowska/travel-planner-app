@@ -1,10 +1,16 @@
-@page "/trips/{TripId:int}"
+﻿@page "/trips/{TripId:int}"
 @attribute [Authorize]
 @using System.Security.Claims
+@using System.Text.Json
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components.Web
+@using TravelPlannerApp.Pages
+@using TravelPlannerApp.Services
 @inject AppDbContext Db
 @inject AuthenticationStateProvider Auth
 @inject IWebHostEnvironment Env
 @inject NavigationManager Nav
+@inject IJSRuntime JS
 
 @if(trip == null){<p>Ładowanie...</p>}
 else
@@ -42,45 +48,386 @@ else
     Trip? trip; Trip? original; bool editing; string active="Budżet"; string[] Tabs={"Budżet","Dokumenty","Zdjęcia","Mapa","Pakowanie","Współużytkownicy"}; int userId; string? message;
     Expense expense = new(){ Date=DateTime.Today, Currency="PLN"}; LocationPoint location = new(){Latitude=50.0614,Longitude=19.9366}; PackingItem item = new(); string collaboratorEmail="";
     decimal Spent => trip?.Expenses.Sum(e=>e.Amount) ?? 0; decimal Remaining => (trip?.BudgetAmount ?? 0) - Spent;
-    protected override async Task OnInitializedAsync(){ var s=await Auth.GetAuthenticationStateAsync(); userId=int.Parse(s.User.FindFirstValue(ClaimTypes.NameIdentifier)!); await Load(); }
-    async Task Load(){ Db.ChangeTracker.Clear(); trip=await Db.Trips.Include(t=>t.TripUsers).ThenInclude(tu=>tu.User).Include(t=>t.Expenses).Include(t=>t.Documents).Include(t=>t.Photos).Include(t=>t.Locations).Include(t=>t.PackingLists).ThenInclude(l=>l.Items).FirstOrDefaultAsync(t=>t.Id==TripId && t.TripUsers.Any(u=>u.UserId==userId)); original = trip==null?null: new Trip{Name=trip.Name,Destination=trip.Destination,StartDate=trip.StartDate,EndDate=trip.EndDate}; }
+    private MapComponent? mapComponent;
+    private LocationPoint? editingPoint = null;
+    private bool showEditForm = false;
+    private List<LocationPoint> mapPoints = new();
+    private List<SearchResult> searchResults = new();
+    private bool showSearchResults = false;
+    private bool showAddPointForm = false;
+    private LocationPoint? pendingPoint = null;
+    private string searchErrorMessage = "";
+    private bool isSearching = false;
+    private string searchAddress = "";
+    private string searchMessage = "";
+    private string? documentMessage;
+    private string? photoMessage;
+
+    // Zmienne pomocnicze dla edycji wydatków
+    private bool isEditingExpense = false;
+    private int? editingExpenseId = null;
+
+    protected override async Task OnInitializedAsync()
+    { 
+        var s = await Auth.GetAuthenticationStateAsync(); 
+        userId = int.Parse(s.User.FindFirstValue(ClaimTypes.NameIdentifier)!); 
+        await Load(); 
+    }
+
+    async Task Load()
+    {
+        Db.ChangeTracker.Clear();
+        trip = await Db.Trips
+            .Include(t => t.TripUsers).ThenInclude(tu => tu.User)
+            .Include(t => t.Expenses)
+            .Include(t => t.Documents)
+            .Include(t => t.Photos)
+            .Include(t => t.Locations)
+            .Include(t => t.PackingLists).ThenInclude(l => l.Items)
+            .FirstOrDefaultAsync(t => t.Id == TripId && t.TripUsers.Any(u => u.UserId == userId));
+        
+        original = trip == null ? null : new Trip
+        {
+            Name = trip.Name,
+            Destination = trip.Destination,
+            StartDate = trip.StartDate,
+            EndDate = trip.EndDate
+        };
+        
+        mapPoints = trip?.Locations?.ToList() ?? new List<LocationPoint>();
+    }
+
+    async Task RefreshMapPoints()
+    {
+        await Load();
+        if (mapComponent != null)
+        {
+            await mapComponent.RefreshPoints();
+        }
+        StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (active == "Mapa" && mapComponent != null)
+        {
+            await mapComponent.RefreshPoints();
+        }
+    }
+
+    private async Task OnSearchInput(KeyboardEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(searchAddress))
+        {
+            showSearchResults = false;
+            searchResults.Clear();
+            return;
+        }
+        
+        if (searchAddress.Length > 2)
+        {
+            await SearchLocation();
+        }
+    }
+
+    private async Task SearchLocation()
+    {
+        if (string.IsNullOrWhiteSpace(searchAddress))
+        {
+            searchErrorMessage = "Wpisz nazwę miejsca do wyszukania.";
+            return;
+        }
+        
+        searchErrorMessage = "";
+        showSearchResults = true;
+        isSearching = true;
+        StateHasChanged();
+        
+        try
+        {
+            var url = $"https://nominatim.openstreetmap.org/search?q={Uri.EscapeDataString(searchAddress)}&format=json&limit=5&addressdetails=1&accept-language=pl";
+            
+            using var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "TravelPlannerApp/1.0 (kontakt@travelapp.com)");
+            httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+            httpClient.Timeout = TimeSpan.FromSeconds(10);
+            
+            var response = await httpClient.GetAsync(url);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                searchErrorMessage = $"Błąd API: {response.StatusCode}. Spróbuj ponownie za chwilę.";
+                showSearchResults = false;
+                return;
+            }
+            
+            var json = await response.Content.ReadAsStringAsync();
+            
+            if (json.TrimStart().StartsWith("<"))
+            {
+                searchErrorMessage = "Serwer zwrócił błąd. Spróbuj ponownie za chwilę.";
+                showSearchResults = false;
+                return;
+            }
+            
+            searchResults = JsonSerializer.Deserialize<List<SearchResult>>(json) ?? new();
+            
+            if (!searchResults.Any())
+            {
+                searchErrorMessage = "Nie znaleziono lokalizacji. Spróbuj innej nazwy.";
+                showSearchResults = false;
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            searchErrorMessage = $"Błąd sieci: {ex.Message}";
+            showSearchResults = false;
+        }
+        catch (JsonException ex)
+        {
+            searchErrorMessage = $"Błąd odpowiedzi serwera. Spróbuj ponownie.";
+            showSearchResults = false;
+        }
+        catch (Exception ex)
+        {
+            searchErrorMessage = $"Błąd: {ex.Message}";
+            showSearchResults = false;
+        }
+        finally
+        {
+            isSearching = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SelectLocation(SearchResult result)
+    {
+        showSearchResults = false;
+        
+        var lat = double.Parse(result.lat, System.Globalization.CultureInfo.InvariantCulture);
+        var lon = double.Parse(result.lon, System.Globalization.CultureInfo.InvariantCulture);
+        
+        await JS.InvokeVoidAsync("flyToLocation", lat, lon);
+        
+        pendingPoint = new LocationPoint
+        {
+            TripId = TripId,
+            Name = result.display_name.Split(',').First().Trim(),
+            Description = result.display_name,
+            Tag = "Atrakcja",
+            Latitude = lat,
+            Longitude = lon
+        };
+        
+        showAddPointForm = true;
+        StateHasChanged();
+    }
+
+    private async Task ConfirmAddPoint()
+    {
+        if (pendingPoint != null && !string.IsNullOrWhiteSpace(pendingPoint.Name))
+        {
+            Db.Locations.Add(pendingPoint);
+            await Db.SaveChangesAsync();
+            await Load();
+            await RefreshMapPoints();
+            
+            showAddPointForm = false;
+            pendingPoint = null;
+            searchAddress = "";
+            searchResults.Clear();
+            searchErrorMessage = "✅ Punkt został dodany!";
+        }
+        else
+        {
+            searchErrorMessage = "Nazwa punktu jest wymagana.";
+        }
+        StateHasChanged();
+    }
+
+    private void CancelAddPoint()
+    {
+        showAddPointForm = false;
+        pendingPoint = null;
+        StateHasChanged();
+    }
+
+    private async Task GetMyLocation()
+    {
+        try
+        {
+            var location = await JS.InvokeAsync<GeoLocation>("getCurrentPosition");
+            await JS.InvokeVoidAsync("flyToLocation", location.Latitude, location.Longitude);
+            searchMessage = $"Twoja lokalizacja: {location.Latitude:F4}, {location.Longitude:F4}";
+        }
+        catch (Exception ex)
+        {
+            searchMessage = $"Nie udało się pobrać lokalizacji: {ex.Message}";
+        }
+        StateHasChanged();
+    }
+
+    private Task OpenEditForm(LocationPoint point)
+    {
+        editingPoint = new LocationPoint
+        {
+            Id = point.Id,
+            Name = point.Name,
+            Description = point.Description,
+            Tag = point.Tag,
+            Latitude = point.Latitude,
+            Longitude = point.Longitude,
+            TripId = point.TripId
+        };
+        showEditForm = true;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task SaveEditedPoint()
+    {
+        if (editingPoint != null && !string.IsNullOrWhiteSpace(editingPoint.Name))
+        {
+            var point = await Db.Locations.FindAsync(editingPoint.Id);
+            if (point != null)
+            {
+                point.Name = editingPoint.Name;
+                point.Description = editingPoint.Description;
+                point.Tag = editingPoint.Tag;
+                Db.Locations.Update(point);
+                await Db.SaveChangesAsync();
+                await Load();
+                await RefreshMapPoints();
+            }
+            showEditForm = false;
+            editingPoint = null;
+        }
+        StateHasChanged();
+    }
+
+    private void CancelEditForm()
+    {
+        showEditForm = false;
+        editingPoint = null;
+        StateHasChanged();
+    }
+
     async Task SaveTrip(){ if(trip!.EndDate < trip.StartDate){message="Niepoprawna chronologia dat."; return;} await Db.SaveChangesAsync(); editing=false; await Load(); }
     void CancelEdit(){ if(trip!=null && original!=null){trip.Name=original.Name; trip.Destination=original.Destination; trip.StartDate=original.StartDate; trip.EndDate=original.EndDate;} editing=false; }
     async Task SaveBudget(){ await Db.SaveChangesAsync(); message="Budżet zapisany."; }
-    async Task AddExpense(){ expense.TripId=TripId; Db.Expenses.Add(expense); await Db.SaveChangesAsync(); expense=new(){Date=DateTime.Today,Currency=trip!.BudgetCurrency}; await Load(); }
+    
+    // Ulepszona metoda dodawania i edycji wydatków
+    async Task AddExpense()
+    { 
+        if (isEditingExpense && editingExpenseId.HasValue)
+        {
+            var existingExpense = await Db.Expenses.FindAsync(editingExpenseId.Value);
+            if (existingExpense != null)
+            {
+                existingExpense.Amount = expense.Amount;
+                existingExpense.Currency = expense.Currency;
+                existingExpense.Category = expense.Category;
+                existingExpense.Description = expense.Description;
+                existingExpense.Date = expense.Date;
+                Db.Expenses.Update(existingExpense);
+                message = "Wydatek został zaktualizowany.";
+            }
+            isEditingExpense = false;
+            editingExpenseId = null;
+        }
+        else
+        {
+            expense.TripId = TripId; 
+            Db.Expenses.Add(expense); 
+            message = "Wydatek został dodany.";
+        }
+        
+        await Db.SaveChangesAsync(); 
+        expense = new(){ Date = DateTime.Today, Currency = trip!.BudgetCurrency ?? "PLN" }; 
+        await Load(); 
+    }
+
+    // Rozpoczęcie procesu edycji wydatku
+    void StartEditExpense(Expense e)
+    {
+        expense = new Expense
+        {
+            Amount = e.Amount,
+            Currency = e.Currency,
+            Category = e.Category,
+            Description = e.Description,
+            Date = e.Date,
+            TripId = e.TripId
+        };
+        editingExpenseId = e.Id;
+        isEditingExpense = true;
+    }
+
+    // Anulowanie edycji wydatku
+    void CancelEditExpense()
+    {
+        expense = new(){ Date = DateTime.Today, Currency = trip!.BudgetCurrency ?? "PLN" };
+        isEditingExpense = false;
+        editingExpenseId = null;
+    }
+
+    // Usuwanie wydatku z bazy
+    async Task DeleteExpense(Expense e)
+    {
+        Db.Expenses.Remove(e);
+        await Db.SaveChangesAsync();
+        message = "Wydatek został usunięty.";
+        if (editingExpenseId == e.Id)
+        {
+            CancelEditExpense();
+        }
+        await Load();
+    }
+
     async Task UploadDocs(InputFileChangeEventArgs e){ await UploadFiles(e, true); }
     async Task UploadPhotos(InputFileChangeEventArgs e){ await UploadFiles(e, false); }
+    
     async Task UploadFiles(InputFileChangeEventArgs e, bool pdf)
     {
-        message = null;
+        if (pdf) documentMessage = null;
+        else photoMessage = null;
+        
         var added = 0;
         var allowedPhotoExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
 
         foreach (var file in e.GetMultipleFiles(10))
         {
+            if (!FileValidator.IsValidFile(file))
+            {
+                var msg = "Nieprawidłowy format lub plik jest uszkodzony.";
+                if (pdf) documentMessage = msg; else photoMessage = msg;
+                continue;
+            }
+
             var extension = Path.GetExtension(file.Name).ToLowerInvariant();
 
             if (pdf && extension != ".pdf")
             {
-                message = "Do dokumentów można dodać tylko PDF.";
+                documentMessage = "Do dokumentów można dodać tylko PDF.";
                 continue;
             }
 
             if (pdf && file.Size > 10 * 1024 * 1024)
             {
-                message = "PDF jest większy niż 10 MB.";
+                documentMessage = "PDF jest większy niż 10 MB.";
                 continue;
             }
 
             if (!pdf && !allowedPhotoExtensions.Contains(extension))
             {
-                message = "Galeria przyjmuje tylko zdjęcia JPG, PNG, GIF albo WEBP.";
+                photoMessage = "Galeria przyjmuje tylko zdjęcia JPG, PNG, GIF albo WEBP.";
                 continue;
             }
 
             if (StorageUsed() + file.Size > 500 * 1024 * 1024)
             {
-                message = "Przekroczono limit 500 MB na podróż.";
+                var msg = "Przekroczono limit 500 MB na podróż.";
+                if (pdf) documentMessage = msg; else photoMessage = msg;
                 continue;
             }
 
@@ -122,21 +469,389 @@ else
         }
 
         await Db.SaveChangesAsync();
-        if (added > 0) message = pdf ? "Dokument został zapisany." : "Zdjęcie zostało zapisane.";
+        
+        if (added > 0) 
+        {
+            if (pdf) documentMessage = "Dokument został zapisany.";
+            else photoMessage = "Zdjęcie zostało zapisane.";
+        }
+        
         await Load();
     }
+    
     long StorageUsed()=> (trip?.Documents.Sum(d=>d.SizeBytes)??0)+(trip?.Photos.Sum(p=>p.SizeBytes)??0);
     async Task AddLocation(){ location.TripId=TripId; Db.Locations.Add(location); await Db.SaveChangesAsync(); location=new(){Latitude=50.0614,Longitude=19.9366}; await Load(); }
     async Task DeleteLocation(LocationPoint l){ Db.Locations.Remove(l); await Db.SaveChangesAsync(); await Load(); }
     async Task AddPackingItem(){ var list=trip!.PackingLists.FirstOrDefault(); if(list==null){list=new PackingList{TripId=TripId,Name="Lista pakowania"}; Db.PackingLists.Add(list); await Db.SaveChangesAsync();} item.PackingListId=list.Id; item.UpdatedAt=DateTime.Now; Db.PackingItems.Add(item); await Db.SaveChangesAsync(); item=new(); await Load(); }
     async Task TogglePacked(PackingItem i){ i.IsPacked=!i.IsPacked; i.UpdatedAt=DateTime.Now; await Db.SaveChangesAsync(); await Load(); }
+   
     async Task DeleteItem(PackingItem i){ Db.PackingItems.Remove(i); await Db.SaveChangesAsync(); await Load(); }
-    async Task AddCollaborator(){ var user=await Db.Users.FirstOrDefaultAsync(u=>u.Email==collaboratorEmail); if(user==null){message="Użytkownik o tym e-mailu nie istnieje."; return;} if(!trip!.TripUsers.Any(t=>t.UserId==user.Id)){Db.TripUsers.Add(new TripUser{TripId=TripId,UserId=user.Id,Role=TripRole.Collaborator}); await Db.SaveChangesAsync();} collaboratorEmail=""; await Load(); }
-    async Task RemoveCollaborator(TripUser tu){ Db.TripUsers.Remove(tu); await Db.SaveChangesAsync(); await Load(); }
-    RenderFragment BudgetTab()=>@<div class="grid two"><div class="card form"><h2>Ustaw budżet</h2><label>Kwota</label><InputNumber @bind-Value="trip!.BudgetAmount"/><label>Waluta</label><InputSelect @bind-Value="trip!.BudgetCurrency"><option>PLN</option><option>EUR</option><option>USD</option><option>GBP</option></InputSelect><button class="primary" @onclick="SaveBudget">Ustaw budżet</button></div><EditForm Model="expense" OnValidSubmit="AddExpense" class="card form"><DataAnnotationsValidator/><h2>Dodaj wydatek</h2><label>Kwota</label><InputNumber @bind-Value="expense.Amount"/><label>Waluta</label><InputSelect @bind-Value="expense.Currency"><option>PLN</option><option>EUR</option><option>USD</option></InputSelect><label>Kategoria</label><InputText @bind-Value="expense.Category"/><label>Opis</label><InputText @bind-Value="expense.Description"/><label>Data</label><InputDate @bind-Value="expense.Date"/><button class="primary">Dodaj koszt</button></EditForm><div class="card wide"><h2>Wydatki</h2>@foreach(var e in trip!.Expenses.OrderByDescending(e=>e.Date)){<div class="trip-row"><span>@e.Date.ToString("dd.MM") · @e.Category · @e.Description</span><b>@e.Amount @e.Currency</b></div>}</div></div>;
-    RenderFragment DocumentsTab()=>@<div class="card"><h2>Dokumenty PDF</h2><InputFile OnChange="UploadDocs" multiple accept="application/pdf"/>@if(!trip!.Documents.Any()){<p class="muted">Brak dokumentów.</p>}@foreach(var d in trip.Documents){<div class="trip-row"><span>@d.FileName <small>@d.UploadedAt.ToString("dd.MM.yyyy")</small></span><span><a target="_blank" href="/api/documents/@d.Id">Podgląd</a> · <a href="/api/documents/@d.Id" download>Pobierz</a></span></div>}@if(message!=null){<div class="alert danger">@message</div>}</div>;
-    RenderFragment PhotosTab()=>@<div class="card"><h2>Galeria zdjęć</h2><InputFile OnChange="UploadPhotos" multiple accept="image/*"/><div class="gallery">@foreach(var p in trip!.Photos){<a href="@p.StoredPath" target="_blank"><img src="@p.StoredPath" title="@p.FileName" /></a>}</div></div>;
-    RenderFragment MapTab()=>@<div class="grid two"><EditForm Model="location" OnValidSubmit="AddLocation" class="card form"><DataAnnotationsValidator/><h2>Dodaj punkt</h2><label>Nazwa</label><InputText @bind-Value="location.Name"/><label>Opis</label><InputText @bind-Value="location.Description"/><label>Tag</label><InputSelect @bind-Value="location.Tag"><option>Restauracja</option><option>Hotel</option><option>Zabytki</option><option>Atrakcja</option></InputSelect><label>Latitude</label><InputNumber @bind-Value="location.Latitude"/><label>Longitude</label><InputNumber @bind-Value="location.Longitude"/><button class="primary">Dodaj pinezkę</button></EditForm><div class="card"><h2>Lokalizacje</h2>@if(!trip!.Locations.Any()){<p class="muted">Brak lokalizacji.</p>}@foreach(var l in trip.Locations){<div class="trip-row"><span><b>@l.Name</b> @l.Tag<br/><small>@l.Latitude, @l.Longitude</small></span><button class="ghost danger-text" @onclick="()=>DeleteLocation(l)">Usuń</button></div>}</div></div>;
+    async Task AddCollaborator()
+    {
+        var currentUserRole = trip!.TripUsers.FirstOrDefault(u => u.UserId == userId)?.Role;
+        if (currentUserRole != TripRole.Owner)
+        {
+            message = "Tylko wlasciciel moze dodawac osoby.";
+            return;
+        }
+
+        var user = await Db.Users.FirstOrDefaultAsync(u => u.Email == collaboratorEmail);
+        if (user == null)
+        {
+            message = "Użytkownik o tym e-mailu nie istnieje.";
+            return;
+        }
+        
+        if (!trip!.TripUsers.Any(t => t.UserId == user.Id))
+        {
+            Db.TripUsers.Add(new TripUser { TripId = TripId, UserId = user.Id, Role = TripRole.Collaborator });
+            await Db.SaveChangesAsync();
+        }
+        
+        collaboratorEmail = "";
+        await Load();
+    }
+
+    async Task DeleteDocument(DocumentFile doc)
+    {
+        documentMessage = null;
+        try
+        {
+            if (File.Exists(doc.StoredPath))
+            {
+                File.Delete(doc.StoredPath);
+            }
+
+            Db.Documents.Remove(doc);
+            await Db.SaveChangesAsync();
+
+            documentMessage = "Dokument został usunięty.";
+            await Load();
+        }
+        catch (Exception)
+        {
+            documentMessage = "Wystąpił błąd podczas usuwania dokumentu.";
+        }
+    }
+
+    async Task DeletePhoto(PhotoFile photo)
+    {
+        photoMessage = null;
+        try
+        {
+            var physicalPath = Path.Combine(Env.WebRootPath, photo.StoredPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+
+            if (File.Exists(physicalPath))
+            {
+                File.Delete(physicalPath);
+            }
+
+            Db.Photos.Remove(photo);
+            await Db.SaveChangesAsync();
+
+            photoMessage = "Zdjęcie zostało usunięte.";
+            await Load();
+        }
+        catch (Exception)
+        {
+            photoMessage = "Wystąpił błąd podczas usuwania zdjęcia.";
+        }
+    }
+
+    async Task RemoveCollaborator(TripUser tu)
+    {
+        var currentUserRole = trip!.TripUsers.FirstOrDefault(u => u.UserId == userId)?.Role;
+        if (currentUserRole != TripRole.Owner)
+        {
+            message = "Tylko właściciel moze usuwać osoby.";
+            return;
+        }
+
+        Db.TripUsers.Remove(tu);
+        await Db.SaveChangesAsync();
+        await Load();
+    }
+
+    public class GeoLocation
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+
+    public class SearchResult
+    {
+        public string lat { get; set; } = "";
+        public string lon { get; set; } = "";
+        public string display_name { get; set; } = "";
+        public string type { get; set; } = "";
+        public double importance { get; set; }
+    }
+
+    RenderFragment BudgetTab()=>@<div class="grid two">
+        <div class="card form">
+            <h2>Ustaw budżet</h2>
+            <label>Kwota</label>
+            <InputNumber @bind-Value="trip!.BudgetAmount"/>
+            <label>Waluta</label>
+            <InputSelect @bind-Value="trip!.BudgetCurrency">
+                <option>PLN</option>
+                <option>EUR</option>
+                <option>USD</option>
+                <option>GBP</option>
+            </InputSelect>
+            <button class="primary" @onclick="SaveBudget">Ustaw budżet</button>
+        </div>
+        
+        <EditForm Model="expense" OnValidSubmit="AddExpense" class="card form">
+            <DataAnnotationsValidator/>
+            <h2>@(isEditingExpense ? "✏️ Edytuj wydatek" : "Dodaj wydatek")</h2>
+            <label>Kwota</label>
+            <InputNumber @bind-Value="expense.Amount"/>
+            <label>Waluta</label>
+            <InputSelect @bind-Value="expense.Currency">
+                <option>PLN</option>
+                <option>EUR</option>
+                <option>USD</option>
+            </InputSelect>
+            <label>Kategoria</label>
+            <InputText @bind-Value="expense.Category"/>
+            <label>Opis</label>
+            <InputText @bind-Value="expense.Description"/>
+            <label>Data</label>
+            <InputDate @bind-Value="expense.Date"/>
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <button class="primary" type="submit">@(isEditingExpense ? "Zapisz zmiany" : "Dodaj koszt")</button>
+                @if (isEditingExpense)
+                {
+                    <button class="ghost" type="button" @onclick="CancelEditExpense">Anuluj</button>
+                }
+            </div>
+        </EditForm>
+        
+        <div class="card wide">
+            <h2>Wydatki</h2>
+            @if (trip!.Expenses == null || !trip.Expenses.Any())
+            {
+                <p class="muted">Brak zarejestrowanych wydatków.</p>
+            }
+            else
+            {
+                @foreach(var e in trip!.Expenses.OrderByDescending(e=>e.Date))
+                {
+                    <div class="trip-row" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #e2e8f0;">
+                        <div>
+                            <span>@e.Date.ToString("dd.MM") · <strong>@e.Category</strong> · @e.Description</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <b style="margin-right: 10px;">@e.Amount.ToString("0.00") @e.Currency</b>
+                            <button class="ghost" @onclick="() => StartEditExpense(e)" style="padding: 4px 8px; cursor: pointer;" title="Edytuj">✏️</button>
+                            <button class="ghost danger-text" @onclick="() => DeleteExpense(e)" style="padding: 4px 8px; cursor: pointer;" title="Usuń">🗑️</button>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>;
+
+    RenderFragment DocumentsTab() => @<div class="card"><h2>Dokumenty PDF</h2><InputFile OnChange="UploadDocs" multiple accept="application/pdf" />@if(!string.IsNullOrEmpty(documentMessage)){<p class="alert success">@documentMessage</p>}@if(trip!.Documents.Any()){<div>@foreach(var d in trip!.Documents){<div class="document-row"><span>📄 @d.FileName</span><button class="ghost danger-text" @onclick="() => DeleteDocument(d)">Usuń</button></div>}</div>}</div>;    
+    RenderFragment PhotosTab() => @<div class="card"><h2>Galeria zdjęć</h2><InputFile OnChange="UploadPhotos" multiple accept="image/*"/>@if(!string.IsNullOrEmpty(photoMessage)){<p class="alert success">@photoMessage</p>}<div class="gallery">@foreach(var p in trip!.Photos){<div class="photo-card" style="position:relative; display:inline-block;"><img src="@p.StoredPath" alt="@p.FileName" /><button class="danger" style="position:absolute; bottom:10px; right:10px;" @onclick="() => DeletePhoto(p)">Usuń</button></div>}</div></div>;
+    
+    RenderFragment MapTab() => @<div class="card" style="font-family: inherit;">
+    <h2 style="margin-bottom: 20px;"> Mapa atrakcji</h2>
+    
+    <div style="margin-bottom: 25px; padding: 20px; background: linear-gradient(135deg, #f8fafc, #f1f5f9); border-radius: 16px; border: 1px solid #e2e8f0;">
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <input type="text" 
+                   @bind="searchAddress" 
+                   @bind:event="oninput"
+                   @onkeyup="OnSearchInput"
+                   placeholder="Wyszukaj miejsce (np. Panteon)" 
+                   style="flex: 1; padding: 14px 16px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;" />
+            <button class="primary" @onclick="SearchLocation" disabled="@isSearching" style="padding: 14px 24px;">
+                @(isSearching ? "⏳ Szukam..." : "🔍 Wyszukaj")
+            </button>
+            <button class="ghost" @onclick="GetMyLocation" style="padding: 14px 24px;">
+                📍 Moja lokalizacja
+            </button>
+        </div>
+        
+        @if (isSearching)
+        {
+            <div style="margin-top: 15px; padding: 12px; background: #dbeafe; border-radius: 10px; color: #1e40af; font-size: 14px;">
+                ⏳ Wyszukiwanie lokalizacji...
+            </div>
+        }
+        
+        @if (showSearchResults && searchResults.Any() && !isSearching)
+        {
+            <div style="margin-top: 15px; border: 1px solid #e2e8f0; border-radius: 12px; background: white; overflow: hidden;">
+                @foreach (var result in searchResults.Take(5))
+                {
+                    <div style="padding: 14px 16px; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background 0.2s;"
+                         onmouseover="this.style.backgroundColor='#f8fafc'"
+                         onmouseout="this.style.backgroundColor='white'"
+                         @onclick="() => SelectLocation(result)">
+                        <div style="font-weight: 600; font-size: 15px;">@result.display_name.Split(',').First()</div>
+                        <div style="font-size: 12px; color: #64748b; margin-top: 4px;">@result.display_name</div>
+                    </div>
+                }
+            </div>
+        }
+        
+        @if (!string.IsNullOrEmpty(searchErrorMessage))
+        {
+            <div class="alert danger" style="margin-top: 15px;">@searchErrorMessage</div>
+        }
+    </div>
+    
+    <MapComponent @ref="mapComponent" 
+                  TripId="@TripId" 
+                  Points="@mapPoints"
+                  OnPointsChanged="@RefreshMapPoints"
+                  OnEditPoint="@OpenEditForm" />
+    
+    @if (showAddPointForm && pendingPoint != null)
+    {
+        <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; max-width: 500px; width: 90%;">
+            <div style="background: white; border-radius: 24px; padding: 28px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);">
+                <h3 style="margin: 0 0 20px 0; font-size: 24px;">➕ Dodaj nowy punkt</h3>
+                
+                <div style="margin-bottom: 18px;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Nazwa *</label>
+                    <input type="text" @bind="pendingPoint.Name" 
+                           style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;" />
+                </div>
+                
+                <div style="margin-bottom: 18px;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Opis</label>
+                    <textarea @bind="pendingPoint.Description" rows="3" 
+                              style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;"></textarea>
+                </div>
+                
+                <div style="margin-bottom: 24px;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Kategoria</label>
+                    <select @bind="pendingPoint.Tag" 
+                            style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;">
+                        <option value="Atrakcja">🏛️ Atrakcja</option>
+                        <option value="Restauracja">🍽️ Restauracja</option>
+                        <option value="Hotel">🏨 Hotel</option>
+                        <option value="Zabytki">🏰 Zabytki</option>
+                        <option value="Natura">🌳 Natura</option>
+                        <option value="Inne">📍 Inne</option>
+                    </select>
+                </div>
+                
+                <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                    <button class="ghost" @onclick="CancelAddPoint" style="padding: 12px 24px;">Anuluj</button>
+                    <button class="primary" @onclick="ConfirmAddPoint" style="padding: 12px 24px;">Dodaj punkt</button>
+                </div>
+            </div>
+        </div>
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 999;" @onclick="CancelAddPoint"></div>
+    }
+    
+    @if (showEditForm && editingPoint != null)
+    {
+        <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; max-width: 500px; width: 90%;">
+            <div style="background: white; border-radius: 24px; padding: 28px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);">
+                <h3 style="margin: 0 0 20px 0; font-size: 24px;">✏️ Edytuj punkt</h3>
+                
+                <div style="margin-bottom: 18px;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Nazwa *</label>
+                    <input type="text" @bind="editingPoint.Name" 
+                           style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;" />
+                </div>
+                
+                <div style="margin-bottom: 18px;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Opis</label>
+                    <textarea @bind="editingPoint.Description" rows="3" 
+                              style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;"></textarea>
+                </div>
+                
+                <div style="margin-bottom: 24px;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px;">Kategoria</label>
+                    <select @bind="editingPoint.Tag" 
+                            style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #cbd5e1; font-size: 14px; font-family: inherit;">
+                        <option value="Atrakcja">🏛️ Atrakcja</option>
+                        <option value="Restauracja">🍽️ Restauracja</option>
+                        <option value="Hotel">🏨 Hotel</option>
+                        <option value="Zabytki">🏰 Zabytki</option>
+                        <option value="Natura">🌳 Natura</option>
+                        <option value="Inne">📍 Inne</option>
+                    </select>
+                </div>
+                
+                <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                    <button class="ghost" @onclick="CancelEditForm" style="padding: 12px 24px;">Anuluj</button>
+                    <button class="primary" @onclick="SaveEditedPoint" style="padding: 12px 24px;">Zapisz zmiany</button>
+                </div>
+            </div>
+        </div>
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 999;" @onclick="CancelEditForm"></div>
+    }
+    
+    <div style="margin-top: 30px;">
+        <h3 style="margin-bottom: 15px;">📌 Lista punktów (@mapPoints.Count)</h3>
+        @if (!mapPoints.Any())
+        {
+            <p class="muted">Brak dodanych punktów. Kliknij na mapie lub wyszukaj miejsce aby dodać!</p>
+        }
+        else
+        {
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px;">
+                @foreach (var l in mapPoints)
+                {
+                    <div style="background: #f8fafc; border-radius: 16px; padding: 16px; border: 1px solid #e2e8f0;">
+                        <div style="display: flex; justify-content: space-between; align-items: start;">
+                            <div>
+                                <strong style="font-size: 16px;">@l.Name</strong>
+                                <span style="display: inline-block; background: #e9ecef; padding: 2px 10px; border-radius: 20px; font-size: 11px; margin-left: 8px;">
+                                    @l.Tag
+                                </span>
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="ghost" @onclick="() => OpenEditForm(l)" style="padding: 6px 12px; font-size: 12px;">
+                                    ✏️
+                                </button>
+                                <button class="ghost danger-text" @onclick="async () => { if(mapComponent != null) await mapComponent.RemovePoint(l.Id); }" style="padding: 6px 12px; font-size: 12px;">
+                                    🗑
+                                </button>
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <small style="color: #bd7ca8;">📍 @l.Latitude.ToString("F6"), @l.Longitude.ToString("F6")</small>
+                            <p style="margin: 8px 0 0 0; font-size: 13px; color: #c07aa8;">@l.Description</p>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>;
+
     RenderFragment PackingTab()=>@<div class="card"><h2>Lista pakowania</h2>@{var list=trip!.PackingLists.FirstOrDefault(); var items=list?.Items.ToList() ?? new List<PackingItem>(); var progress=items.Count==0?0:(int)(100.0*items.Count(i=>i.IsPacked)/items.Count);}<div class="progress"><span style="width:@progress%"></span></div><p>@progress% spakowane</p><EditForm Model="item" OnValidSubmit="AddPackingItem" class="inline-form"><InputText @bind-Value="item.Name" placeholder="Przedmiot"/><InputNumber @bind-Value="item.Quantity"/><button class="primary">Dodaj</button></EditForm>@foreach(var i in items){<div class="trip-row packing-item"><label class="@(i.IsPacked?"packed":"")"><input type="checkbox" checked="@i.IsPacked" @onchange="()=>TogglePacked(i)"/> <span>@i.Name</span> <span class="qty-badge">@(i.Quantity <= 1 ? "1 szt." : $"{i.Quantity} szt.")</span></label><button class="ghost danger-text" @onclick="()=>DeleteItem(i)">Usuń</button></div>}@if(list!=null){<a class="button" href="/api/packing/@list.Id/export">Eksportuj do PDF</a>}</div>;
-    RenderFragment UsersTab()=>@<div class="card form narrow"><h2>Współużytkownicy</h2><InputText @bind-Value="collaboratorEmail" placeholder="email osoby"/><button class="primary" @onclick="AddCollaborator">Dodaj</button>@foreach(var u in trip!.TripUsers){<div class="trip-row"><span>@u.User.Email (@u.Role)</span>@if(u.Role==TripRole.Collaborator){<button class="ghost danger-text" @onclick="()=>RemoveCollaborator(u)">Usuń</button>}</div>}</div>;
+    
+    RenderFragment UsersTab() => @<div class="card form narrow">
+        <h2>Współużytkownicy</h2>
+        @{
+            var currentUserRole = trip!.TripUsers.FirstOrDefault(u => u.UserId == userId)?.Role;
+        }
+
+        @if(currentUserRole == TripRole.Owner)
+        {
+            <InputText @bind-Value="collaboratorEmail" placeholder="email osoby"/>
+            <button class="primary" @onclick="AddCollaborator">Dodaj</button>
+        }
+
+        @foreach(var u in trip!.TripUsers)
+        {
+            <div class="trip-row">
+                <span>@u.User.Email (@u.Role)</span>
+                @if(currentUserRole == TripRole.Owner && u.Role == TripRole.Collaborator)
+                {
+                    <button class="ghost danger-text" @onclick="()=>RemoveCollaborator(u)">Usun</button>
+                }
+            </div>
+        }
+    </div>;
 }

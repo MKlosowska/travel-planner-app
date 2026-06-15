@@ -1,24 +1,42 @@
-@page "/"
-@attribute [Authorize]
-@inject NavigationManager Nav
+﻿@page "/"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
 
-<section class="hero hero-dashboard">
-    <div>
-        <span class="eyebrow">Aplikacja podróżnicza</span>
-        <h1>Panel planowania podróży</h1>
-        <p>Organizuj wyjazdy, dokumenty PDF, budżet, wydatki, zdjęcia, lokalizacje i listę pakowania w jednym miejscu.</p>
-        <div class="hero-actions">
-            <button class="primary" @onclick='() => Nav.NavigateTo("/trips")'>Przejdź do podróży</button>
-            <button @onclick='() => Nav.NavigateTo("/settings")'>Ustawienia</button>
+<div class="hero">
+    <div class="hero-dashboard">
+        <div>
+            <h1>Travel Planner</h1>
+            <p>Zorganizuj swoje wyjazdy, dokumenty PDF, budżet, wydatki, zdjęcia, lokalizacje i listę pakowania w jednym miejscu.</p>
+            <div class="hero-actions">
+                <a href="trips" class="button primary">Przejdź do podróży</a>
+                <a href="settings" class="button">Ustawienia</a>
+            </div>
         </div>
     </div>
-</section>
+</div>
 
-<section class="feature-grid">
-    <div class="feature-card"><span>🧳</span><h3>Podróże</h3><p>Tworzenie, edycja i usuwanie planów wyjazdu.</p></div>
-    <div class="feature-card"><span>💸</span><h3>Budżet</h3><p>Limit podróży, wydatki i aktualne wykorzystanie budżetu.</p></div>
-    <div class="feature-card"><span>📄</span><h3>Dokumenty</h3><p>Upload PDF, podgląd i pobieranie dokumentów.</p></div>
-    <div class="feature-card"><span>📍</span><h3>Mapa</h3><p>Punkty, opisy i tagi atrakcji turystycznych.</p></div>
-    <div class="feature-card"><span>✅</span><h3>Pakowanie</h3><p>Checklisty, checkboxy i pasek postępu.</p></div>
-    <div class="feature-card"><span>🖼️</span><h3>Zdjęcia</h3><p>Galeria zdjęć przypisana do konkretnej podróży.</p></div>
-</section>
+<div class="feature-grid">
+    <div class="feature-card">
+        <h3>Podróże</h3>
+        <p>Tworzenie, edycja i planowanie wyjazdów.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Budżet</h3>
+        <p>Kontrola wydatków i limitów finansowych.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Dokumenty</h3>
+        <p>Przechowywanie biletów i rezerwacji PDF.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Mapa</h3>
+        <p>Interaktywne oznaczanie punktów podróży.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Pakowanie</h3>
+        <p>Wygodne listy i automatyczny eksport PDF.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Zdjęcia</h3>
+        <p>Twoje wspomnienia zapisane w galerii.</p>
+    </div>
+</div>

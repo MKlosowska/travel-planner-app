@@ -1,33 +1,73 @@
 @page "/login"
 @attribute [AllowAnonymous]
+@inject TravelPlannerApp.Services.AuthService AuthService
 @inject NavigationManager Nav
 
-<div class="auth-card login-card">
-    <div class="auth-logo">✈</div>
-    <span class="eyebrow">Travel Planner</span>
-    <h1>Witaj ponownie</h1>
-    <p class="muted">Zaloguj się, aby przejść do panelu planowania podróży.</p>
-    <div class="demo-box">Demo: <b>demo@travel.pl</b> / <b>Demo123!</b></div>
-    @if (Error) { <div class="alert danger">Nieprawidłowy adres e-mail lub hasło.</div> }
-    @if (!string.IsNullOrWhiteSpace(Locked)) { <div class="alert danger">Konto zablokowane. Spróbuj po @Locked.</div> }
-    <form method="post" action="/api/auth/login" class="form">
-        <label>E-mail</label>
-        <input name="email" type="email" required placeholder="np. demo@travel.pl" />
-        <label>Hasło</label>
-        <input name="password" type="password" required minlength="6" placeholder="Wpisz hasło" />
-        <button class="primary full" type="submit">Zaloguj się</button>
-    </form>
-    <a class="auth-link" href="/reset-password">Nie pamiętasz hasła?</a>
+<style>
+    /* Całkowicie ukrywamy sidebar z MainLayout tylko na tej stronie */
+    .sidebar { 
+        display: none !important; 
+    }
+    
+    /* Resetujemy ewentualne marginesy i paddingi głównego kontenera aplikacji */
+    .shell, .content, .main-content {
+        padding: 0 !important;
+        margin: 0 !important;
+        display: block !important;
+    }
+</style>
+
+<div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; width: 100vw; background-color: var(--bg); position: fixed; top: 0; left: 0; z-index: 9999; padding: 20px; box-sizing: border-box;">
+    
+    <div class="auth-card login-card" style="margin: 0; width: 100%; max-width: 470px;">
+        <span class="eyebrow">Travel Planner</span>
+        <h1>Logowanie</h1>
+        <p class="muted">Zaloguj się, aby przejść do panelu planowania podróży.</p>
+        <div class="demo-box">Demo: <b>demo@travel.pl</b> / <b>Demo123!</b></div>
+        
+        @if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert danger" style="background: #fecaca; color: #991b1b; padding: 12px; border-radius: 16px; margin-bottom: 16px; font-weight: 650; border: 1px solid #ef4444;">
+                @errorMessage
+            </div>
+        }
+        
+        <form @onsubmit="HandleLogin" class="form">
+            <div style="margin-bottom: 12px;">
+                <label>E-mail</label>
+                <input @bind="email" type="email" required placeholder="np. demo@travel.pl" />
+            </div>
+            
+            <div style="margin-bottom: 16px;">
+                <label>Hasło</label>
+                <input @bind="password" type="password" required minlength="6" placeholder="Wpisz hasło" />
+            </div>
+            
+            <button class="primary full" type="submit">Zaloguj się</button>
+        </form>
+        
+        <a class="auth-link" href="/reset-password">Nie pamiętasz hasła?</a>
+    </div>
+
 </div>
 
 @code {
-    bool Error => Nav.ToAbsoluteUri(Nav.Uri).Query.Contains("error=1");
-    string? Locked
+    private string email = string.Empty;
+    private string password = string.Empty;
+    private string? errorMessage;
+
+    private async Task HandleLogin()
     {
-        get
+        errorMessage = null; 
+        
+        var user = await AuthService.ValidateLoginAsync(email, password);
+        
+        if (user == null)
         {
-            var q = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(Nav.ToAbsoluteUri(Nav.Uri).Query);
-            return q.TryGetValue("locked", out var v) ? v.ToString() : null;
+            errorMessage = "Nieprawidłowy adres e-mail lub hasło.";
+            return;
         }
+
+        Nav.NavigateTo($"/api/auth/login-success?email={Uri.EscapeDataString(email)}&password={Uri.EscapeDataString(password)}", forceLoad: true);
     }
 }

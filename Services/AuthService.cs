@@ -24,7 +24,14 @@ public class AuthService
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
         if (user == null) return null;
-        if (user.LockedUntil.HasValue && user.LockedUntil > DateTime.Now) return user;
+
+        // Jeśli konto jest zablokowane, zwracamy null, aby Program.cs obsłużył blokadę przekierowaniem
+        if (user.LockedUntil.HasValue && user.LockedUntil > DateTime.Now) 
+        {
+            return null; 
+        }
+
+        // Poprawne hasło
         if (user.PasswordHash == HashPassword(password))
         {
             user.FailedLoginAttempts = 0;
@@ -32,12 +39,15 @@ public class AuthService
             await _db.SaveChangesAsync();
             return user;
         }
+
+        // Błędne hasło - zwiększamy licznik i zapisujemy w bazie
         user.FailedLoginAttempts++;
         if (user.FailedLoginAttempts >= 5)
         {
             user.LockedUntil = DateTime.Now.AddMinutes(15);
-            user.FailedLoginAttempts = 0;
+            user.FailedLoginAttempts = 0; // Resetujemy licznik, bo blokada została już nałożona
         }
+
         await _db.SaveChangesAsync();
         return null;
     }
