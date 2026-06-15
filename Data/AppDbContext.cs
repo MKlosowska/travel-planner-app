@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using TravelPlannerApp.Models;
 
 namespace TravelPlannerApp.Data;
@@ -24,14 +24,5 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Trip>().HasQueryFilter(t => !t.IsDeleted);
         modelBuilder.Entity<Expense>().Property(e => e.Amount).HasColumnType("decimal(18,2)");
         modelBuilder.Entity<Trip>().Property(t => t.BudgetAmount).HasColumnType("decimal(18,2)");
-
-
-        modelBuilder.Entity<Expense>().HasQueryFilter(e => !e.Trip.IsDeleted);
-        modelBuilder.Entity<DocumentFile>().HasQueryFilter(d => !d.Trip.IsDeleted);
-        modelBuilder.Entity<LocationPoint>().HasQueryFilter(l => !l.Trip.IsDeleted);
-        modelBuilder.Entity<PackingList>().HasQueryFilter(p => !p.Trip.IsDeleted);
-        modelBuilder.Entity<PhotoFile>().HasQueryFilter(p => !p.Trip.IsDeleted);
-        modelBuilder.Entity<TripUser>().HasQueryFilter(t => !t.Trip.IsDeleted);
-
     }
 }
