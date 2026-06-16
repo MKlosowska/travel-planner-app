@@ -832,26 +832,35 @@ else
     RenderFragment PackingTab()=>@<div class="card"><h2>Lista pakowania</h2>@{var list=trip!.PackingLists.FirstOrDefault(); var items=list?.Items.ToList() ?? new List<PackingItem>(); var progress=items.Count==0?0:(int)(100.0*items.Count(i=>i.IsPacked)/items.Count);}<div class="progress"><span style="width:@progress%"></span></div><p>@progress% spakowane</p><EditForm Model="item" OnValidSubmit="AddPackingItem" class="inline-form"><InputText @bind-Value="item.Name" placeholder="Przedmiot"/><InputNumber @bind-Value="item.Quantity"/><button class="primary">Dodaj</button></EditForm>@foreach(var i in items){<div class="trip-row packing-item"><label class="@(i.IsPacked?"packed":"")"><input type="checkbox" checked="@i.IsPacked" @onchange="()=>TogglePacked(i)"/> <span>@i.Name</span> <span class="qty-badge">@(i.Quantity <= 1 ? "1 szt." : $"{i.Quantity} szt.")</span></label><button class="ghost danger-text" @onclick="()=>DeleteItem(i)">Usuń</button></div>}@if(list!=null){<a class="button" href="/api/packing/@list.Id/export">Eksportuj do PDF</a>}</div>;
     
     RenderFragment UsersTab() => @<div class="card form narrow">
-        <h2>Współużytkownicy</h2>
-        @{
-            var currentUserRole = trip!.TripUsers.FirstOrDefault(u => u.UserId == userId)?.Role;
-        }
+    <h2>Współużytkownicy</h2>
+    @{
+        var currentUserRole = trip!.TripUsers.FirstOrDefault(u => u.UserId == userId)?.Role;
+    }
 
-        @if(currentUserRole == TripRole.Owner)
-        {
-            <InputText @bind-Value="collaboratorEmail" placeholder="email osoby"/>
-            <button class="primary" @onclick="AddCollaborator">Dodaj</button>
-        }
+    @if (!string.IsNullOrEmpty(message))
+    {
+        <div class="alert @(message.Contains("Użytkownik") || message.Contains("Tylko") ? "danger" : "success")" style="margin-bottom: 12px;">
+            @message
+        </div>
+    }
 
-        @foreach(var u in trip!.TripUsers)
-        {
-            <div class="trip-row">
-                <span>@u.User.Email (@u.Role)</span>
-                @if(currentUserRole == TripRole.Owner && u.Role == TripRole.Collaborator)
-                {
-                    <button class="ghost danger-text" @onclick="()=>RemoveCollaborator(u)">Usun</button>
-                }
-            </div>
-        }
-    </div>;
+    @if(currentUserRole == TripRole.Owner)
+    {
+        <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+            <input @bind="collaboratorEmail" type="email" placeholder="email osoby" style="flex: 1;" />
+            <button class="primary" @onclick="AddCollaborator" style="min-width: 100px;">Dodaj</button>
+        </div>
+    }
+
+    @foreach(var u in trip!.TripUsers)
+    {
+        <div class="trip-row">
+            <span>@(u.User?.Email ?? "Ładowanie...") (@u.Role)</span>
+            @if(currentUserRole == TripRole.Owner && u.Role == TripRole.Collaborator)
+            {
+                <button class="ghost danger-text" @onclick="()=>RemoveCollaborator(u)">Usun</button>
+            }
+        </div>
+    }
+</div>;
 }
