@@ -1,0 +1,105 @@
+@page "/register"
+@attribute [AllowAnonymous]
+@inject TravelPlannerApp.Services.AuthService AuthService
+@inject TravelPlannerApp.Data.AppDbContext Db
+@inject NavigationManager Nav
+@using Microsoft.EntityFrameworkCore
+
+<style>
+    .sidebar { 
+        display: none !important; 
+    }
+    .shell, .content, .main-content {
+        padding: 0 !important;
+        margin: 0 !important;
+        display: block !important;
+    }
+</style>
+
+<div style="display: flex; justify-content: center; align-items: center; min-height: 100vh; width: 100vw; background-color: var(--bg); position: fixed; top: 0; left: 0; z-index: 9999; padding: 20px; box-sizing: border-box;">
+    
+    <div class="auth-card login-card" style="margin: 0; width: 100%; max-width: 470px;">
+        <span class="eyebrow">Travel Planner</span>
+        <h1>Załóż konto</h1>
+        <p class="muted">Zarejestruj się, aby móc współdzielić plany podróży.</p>
+        
+        @if (!string.IsNullOrWhiteSpace(message))
+        {
+            <div class="alert @(isSuccess ? "success" : "danger")" style="padding: 12px; border-radius: 16px; margin-bottom: 16px; font-weight: 650; border: 1px solid @(isSuccess ? "#22c55e" : "#ef4444"); background: @(isSuccess ? "#dcfce7" : "#fecaca"); color: @(isSuccess ? "#166534" : "#991b1b");">
+                @message
+            </div>
+        }
+        
+        <form @onsubmit="HandleRegistration" class="form">
+            <div style="margin-bottom: 12px;">
+                <label>E-mail</label>
+                <input @bind="email" type="email" required placeholder="np. julia@travel.pl" />
+            </div>
+            
+            <div style="margin-bottom: 16px;">
+                <label>Hasło</label>
+                <input @bind="password" type="password" required minlength="6" placeholder="Min. 6 znaków" />
+            </div>
+            
+            <button class="primary full" type="submit" style="margin-bottom: 12px;">Zarejestruj się</button>
+        </form>
+        
+        <div style="text-align: center; margin-top: 12px;">
+            <a class="auth-link" href="/login">Masz już konto? Zaloguj się</a>
+        </div>
+    </div>
+
+</div>
+
+@code {
+    private string email = string.Empty;
+    private string password = string.Empty;
+    private string? message;
+    private bool isSuccess = false;
+
+    private async Task HandleRegistration()
+    {
+        message = null;
+        isSuccess = false;
+
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            message = "Wszystkie pola są wymagane.";
+            return;
+        }
+
+        var userExists = await Db.Users.AnyAsync(u => u.Email == email.ToLower().Trim());
+        if (userExists)
+        {
+            message = "Ten adres e-mail jest już zajęty.";
+            return;
+        }
+
+        try
+        {
+            string securePasswordHash = TravelPlannerApp.Services.AuthService.HashPassword(password);
+
+            var newUser = new TravelPlannerApp.Models.AppUser
+            {
+                Email = email.ToLower().Trim(),
+                PasswordHash = securePasswordHash,
+                FailedLoginAttempts = 0,
+                LockedUntil = null
+            };
+
+            Db.Users.Add(newUser);
+            await Db.SaveChangesAsync();
+
+            isSuccess = true;
+            message = "Konto zostało utworzone! Za chwilę nastąpi przekierowanie...";
+            StateHasChanged();
+
+            await Task.Delay(2000);
+            Nav.NavigateTo("/login");
+        }
+        catch (Exception ex)
+        {
+            message = $"Błąd rejestracji: {ex.Message}";
+        }
+    }
+}
